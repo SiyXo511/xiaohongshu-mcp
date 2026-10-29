@@ -30,14 +30,15 @@ func NewXiaohongshuService() *XiaohongshuService {
 
 // PublishRequest 发布请求
 type PublishRequest struct {
-	Title      string   `json:"title" binding:"required"`
-	Content    string   `json:"content" binding:"required"`
-	Images     []string `json:"images" binding:"required,min=1"`
-	Tags       []string `json:"tags,omitempty"`
-	ScheduleAt string   `json:"schedule_at,omitempty"` // 定时发布时间，ISO8601格式，为空则立即发布
-	IsOriginal bool     `json:"is_original,omitempty"` // 是否声明原创
-	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
-	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
+	Title         string   `json:"title" binding:"required"`
+	Content       string   `json:"content" binding:"required"`
+	Images        []string `json:"images" binding:"required,min=1"`
+	Tags          []string `json:"tags,omitempty"`
+	ScheduleAt    string   `json:"schedule_at,omitempty"`     // 定时发布时间，ISO8601格式，为空则立即发布
+	IsOriginal    bool     `json:"is_original,omitempty"`     // 是否声明原创
+	IsAIGenerated bool     `json:"is_ai_generated,omitempty"` // 是否声明笔记含AI合成内容
+	Visibility    string   `json:"visibility,omitempty"`      // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products      []string `json:"products,omitempty"`        // 商品关键词列表，用于绑定带货商品
 }
 
 // LoginStatusResponse 登录状态响应
@@ -64,14 +65,15 @@ type PublishResponse struct {
 
 // PublishVideoRequest 发布视频请求（仅支持本地单个视频文件）
 type PublishVideoRequest struct {
-	Title      string   `json:"title" binding:"required"`
-	Content    string   `json:"content" binding:"required"`
-	Video      string   `json:"video" binding:"required"`
-	Tags       []string `json:"tags,omitempty"`
-	ScheduleAt string   `json:"schedule_at,omitempty"` // 定时发布时间，ISO8601格式，为空则立即发布
-	IsOriginal bool     `json:"is_original,omitempty"` // 是否声明原创
-	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
-	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
+	Title         string   `json:"title" binding:"required"`
+	Content       string   `json:"content" binding:"required"`
+	Video         string   `json:"video" binding:"required"`
+	Tags          []string `json:"tags,omitempty"`
+	ScheduleAt    string   `json:"schedule_at,omitempty"`     // 定时发布时间，ISO8601格式，为空则立即发布
+	IsOriginal    bool     `json:"is_original,omitempty"`     // 是否声明原创
+	IsAIGenerated bool     `json:"is_ai_generated,omitempty"` // 是否声明笔记含AI合成内容
+	Visibility    string   `json:"visibility,omitempty"`      // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products      []string `json:"products,omitempty"`        // 商品关键词列表，用于绑定带货商品
 }
 
 // PublishVideoResponse 发布视频响应
@@ -240,14 +242,15 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 	}
 
 	content := xiaohongshu.PublishImageContent{
-		Title:        req.Title,
-		Content:      req.Content,
-		Tags:         req.Tags,
-		ImagePaths:   imagePaths,
-		ScheduleTime: scheduleTime,
-		IsOriginal:   req.IsOriginal,
-		Visibility:   req.Visibility,
-		Products:     req.Products,
+		Title:         req.Title,
+		Content:       req.Content,
+		Tags:          req.Tags,
+		ImagePaths:    imagePaths,
+		ScheduleTime:  scheduleTime,
+		IsOriginal:    req.IsOriginal,
+		IsAIGenerated: req.IsAIGenerated,
+		Visibility:    req.Visibility,
+		Products:      req.Products,
 	}
 
 	if err := s.publishContent(ctx, content); err != nil {
@@ -328,14 +331,15 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 	}
 
 	content := xiaohongshu.PublishVideoContent{
-		Title:        req.Title,
-		Content:      req.Content,
-		Tags:         req.Tags,
-		VideoPath:    req.Video,
-		ScheduleTime: scheduleTime,
-		IsOriginal:   req.IsOriginal,
-		Visibility:   req.Visibility,
-		Products:     req.Products,
+		Title:         req.Title,
+		Content:       req.Content,
+		Tags:          req.Tags,
+		VideoPath:     req.Video,
+		ScheduleTime:  scheduleTime,
+		IsOriginal:    req.IsOriginal,
+		IsAIGenerated: req.IsAIGenerated,
+		Visibility:    req.Visibility,
+		Products:      req.Products,
 	}
 
 	if err := s.publishVideo(ctx, content); err != nil {

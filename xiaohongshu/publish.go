@@ -19,14 +19,15 @@ import (
 
 // PublishImageContent 发布图文内容
 type PublishImageContent struct {
-	Title        string
-	Content      string
-	Tags         []string
-	ImagePaths   []string
-	ScheduleTime *time.Time // 定时发布时间，nil 表示立即发布
-	IsOriginal   bool       // 是否声明原创
-	Visibility   string     // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
-	Products     []string   // 商品关键词列表，用于绑定带货商品
+	Title         string
+	Content       string
+	Tags          []string
+	ImagePaths    []string
+	ScheduleTime  *time.Time // 定时发布时间，nil 表示立即发布
+	IsOriginal    bool       // 是否声明原创
+	IsAIGenerated bool       // 是否声明笔记含AI合成内容
+	Visibility    string     // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products      []string   // 商品关键词列表，用于绑定带货商品
 }
 
 type PublishAction struct {
@@ -38,6 +39,10 @@ const (
 
 	// contentElemTimeout 查找正文输入框的轮询窗口
 	contentElemTimeout = 10 * time.Second
+
+	aiContentDeclarationText = "笔记含AI合成内容"
+	contentTypeDeclaration   = "添加内容类型声明"
+	aiDeclarationTimeout     = 5 * time.Second
 )
 
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
@@ -92,9 +97,9 @@ func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent
 		tags = tags[:10]
 	}
 
-	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, visibility=%s, products=%v", content.Title, len(content.ImagePaths), tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products)
+	logrus.Infof("发布内容: title=%s, images=%v, tags=%v, schedule=%v, original=%v, ai_generated=%v, visibility=%s, products=%v", content.Title, len(content.ImagePaths), tags, content.ScheduleTime, content.IsOriginal, content.IsAIGenerated, content.Visibility, content.Products)
 
-	if err := submitPublish(ctx, page, content.Title, content.Content, tags, content.ScheduleTime, content.IsOriginal, content.Visibility, content.Products); err != nil {
+	if err := submitPublish(ctx, page, content.Title, content.Content, tags, content.ScheduleTime, content.IsOriginal, content.IsAIGenerated, content.Visibility, content.Products); err != nil {
 		return errors.Wrap(err, "小红书发布失败")
 	}
 
@@ -345,7 +350,7 @@ func waitForUploadComplete(page *rod.Page, expectedCount int) error {
 	return errors.Errorf("第%d张图片上传超时(60s)，请检查网络连接和图片大小", expectedCount)
 }
 
-func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal bool, visibility string, products []string) error {
+func submitPublish(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal, isAIGenerated bool, visibility string, products []string) error {
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
 		return errors.Wrap(err, "查找标题输入框失败")
@@ -401,6 +406,13 @@ func submitPublish(ctx context.Context, page *rod.Page, title, content string, t
 			return errors.Wrap(err, "设置原创声明失败（已请求原创，中止发布）")
 		}
 		slog.Info("已声明原创")
+	}
+
+	if isAIGenerated {
+		if err := setAIContentDeclaration(page); err != nil {
+			return errors.Wrap(err, "设置AI合成内容声明失败（已请求声明，中止发布）")
+		}
+		slog.Info("已声明笔记含AI合成内容")
 	}
 
 	if err := bindProducts(ctx, page, products); err != nil {
@@ -1053,6 +1065,104 @@ func setOriginal(page *rod.Page) error {
 	}
 
 	return errors.New("未找到原创声明选项")
+}
+
+// setAIContentDeclaration 通过“添加内容类型声明”下拉框声明笔记含AI合成内容
+func setAIContentDeclaration(page *rod.Page) error {
+	selects, err := page.Elements("div.d-select")
+	if err != nil {
+		return errors.Wrap(err, "查找内容类型声明下拉框失败")
+	}
+
+	var dropdown *rod.Element
+	for _, selectElem := range selects {
+		text, err := selectElem.Text()
+		if err != nil {
+			continue
+		}
+		if hasAIContentDeclaration(text) {
+			slog.Info("AI合成内容声明已开启")
+			return nil
+		}
+		if strings.Contains(normalizeDeclarationText(text), contentTypeDeclaration) {
+			dropdown = selectElem
+		}
+	}
+	if dropdown == nil {
+		return errors.New("未找到添加内容类型声明下拉框")
+	}
+
+	if err := humanize.Click(dropdown); err != nil {
+		return errors.Wrap(err, "打开内容类型声明下拉框失败")
+	}
+
+	option, err := waitForVisibleAIContentOption(page, aiDeclarationTimeout)
+	if err != nil {
+		return err
+	}
+	if err := humanize.Click(option); err != nil {
+		return errors.Wrap(err, "选择AI合成内容声明失败")
+	}
+	if err := waitForAIContentDeclaration(page, aiDeclarationTimeout); err != nil {
+		return err
+	}
+
+	slog.Info("已选择AI合成内容声明")
+	return nil
+}
+
+func waitForVisibleAIContentOption(page *rod.Page, timeout time.Duration) (*rod.Element, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		options, err := page.Elements(".d-option-name")
+		if err != nil {
+			return nil, errors.Wrap(err, "查找AI合成内容选项失败")
+		}
+		for _, option := range options {
+			text, err := option.Text()
+			if err != nil || !hasAIContentDeclaration(text) {
+				continue
+			}
+			visible, err := option.Visible()
+			if err == nil && visible {
+				return option, nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return nil, errors.New("等待AI合成内容选项出现超时")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitForAIContentDeclaration(page *rod.Page, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		selects, err := page.Elements("div.d-select")
+		if err != nil {
+			return errors.Wrap(err, "确认AI合成内容声明失败")
+		}
+		for _, selectElem := range selects {
+			text, err := selectElem.Text()
+			if err == nil && hasAIContentDeclaration(text) {
+				return nil
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return errors.New("AI合成内容声明未确认选中")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func hasAIContentDeclaration(text string) bool {
+	return strings.Contains(normalizeDeclarationText(text), aiContentDeclarationText)
+}
+
+func normalizeDeclarationText(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // confirmOriginalDeclaration 交互（勾选须知、点声明按钮）走 go-rod 点击；
