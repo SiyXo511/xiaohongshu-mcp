@@ -14,6 +14,8 @@ import (
 
 // PublishVideoContent 发布视频内容
 type PublishVideoContent struct {
+	CoverPath     string
+	PreviewPath   string
 	Title         string
 	Content       string
 	Tags          []string
@@ -59,6 +61,11 @@ func NewPublishVideoAction(page *rod.Page) (*PublishAction, error) {
 
 // PublishVideo 上传视频并提交
 func (p *PublishAction) PublishVideo(ctx context.Context, content PublishVideoContent) error {
+	if content.CoverPath != "" {
+		if err := validateVideoCover(content.CoverPath); err != nil {
+			return err
+		}
+	}
 	if content.VideoPath == "" {
 		return errors.New("视频不能为空")
 	}
@@ -70,7 +77,7 @@ func (p *PublishAction) PublishVideo(ctx context.Context, content PublishVideoCo
 		return errors.Wrap(err, "小红书上传视频失败")
 	}
 
-	if err := submitPublishVideo(ctx, page, content.Title, content.Content, content.Tags, content.ScheduleTime, content.IsOriginal, content.IsAIGenerated, content.Visibility, content.Products); err != nil {
+	if err := submitPublishVideo(ctx, page, content.Title, content.Content, content.Tags, content.ScheduleTime, content.IsOriginal, content.IsAIGenerated, content.Visibility, content.Products, content); err != nil {
 		return errors.Wrap(err, "小红书发布失败")
 	}
 	return nil
@@ -107,7 +114,7 @@ func uploadVideo(page *rod.Page, videoPath string) error {
 }
 
 // submitPublishVideo 填写标题、正文、标签并点击发布（等待按钮可点击后再提交）
-func submitPublishVideo(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal, isAIGenerated bool, visibility string, products []string) error {
+func submitPublishVideo(ctx context.Context, page *rod.Page, title, content string, tags []string, scheduleTime *time.Time, isOriginal, isAIGenerated bool, visibility string, products []string, options ...PublishVideoContent) error {
 	// 标题
 	titleElem, err := page.Element("div.d-input input")
 	if err != nil {
@@ -168,6 +175,21 @@ func submitPublishVideo(ctx context.Context, page *rod.Page, title, content stri
 		return errors.Wrap(err, "绑定商品失败")
 	}
 
+	if len(options) > 0 {
+		option := options[0]
+		if option.CoverPath != "" {
+			if err := setVideoCover(page, option.CoverPath); err != nil {
+				return err
+			}
+		}
+		if option.PreviewPath != "" {
+			png, err := page.Screenshot(true, nil)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(option.PreviewPath, png, 0600)
+		}
+	}
 	if err := clickPublishButton(page); err != nil {
 		return err
 	}

@@ -30,6 +30,8 @@ type PublishContentArgs struct {
 
 // PublishVideoArgs 发布视频的参数（仅支持本地单个视频文件）
 type PublishVideoArgs struct {
+	CoverPath     string   `json:"cover_path,omitempty" jsonschema:"本地自定义封面绝对路径"`
+	PreviewOnly   bool     `json:"preview_only,omitempty" jsonschema:"只生成发布前预览，不提交发布；预览不保证平台保存草稿"`
 	Title         string   `json:"title" jsonschema:"内容标题（小红书限制：最多20个中文字或英文单词）"`
 	Content       string   `json:"content" jsonschema:"正文内容，不包含以#开头的标签内容，所有话题标签都用tags参数来生成和提供即可"`
 	Video         string   `json:"video" jsonschema:"本地视频绝对路径（仅支持单个视频文件，如:/Users/user/video.mp4）"`
@@ -420,6 +422,8 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"title":           args.Title,
 				"content":         args.Content,
 				"video":           args.Video,
+				"cover_path":      args.CoverPath,
+				"preview_only":    args.PreviewOnly,
 				"tags":            convertStringsToInterfaces(args.Tags),
 				"schedule_at":     args.ScheduleAt,
 				"is_original":     args.IsOriginal,

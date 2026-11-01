@@ -65,6 +65,8 @@ type PublishResponse struct {
 
 // PublishVideoRequest 发布视频请求（仅支持本地单个视频文件）
 type PublishVideoRequest struct {
+	CoverPath     string   `json:"cover_path,omitempty" jsonschema:"本地自定义封面绝对路径"`
+	PreviewOnly   bool     `json:"preview_only,omitempty" jsonschema:"只生成发布前预览，不提交发布；预览不保证平台保存草稿"`
 	Title         string   `json:"title" binding:"required"`
 	Content       string   `json:"content" binding:"required"`
 	Video         string   `json:"video" binding:"required"`
@@ -78,10 +80,11 @@ type PublishVideoRequest struct {
 
 // PublishVideoResponse 发布视频响应
 type PublishVideoResponse struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-	Video   string `json:"video"`
-	Status  string `json:"status"`
+	PreviewPath string `json:"preview_path,omitempty"`
+	Title       string `json:"title"`
+	Content     string `json:"content"`
+	Video       string `json:"video"`
+	Status      string `json:"status"`
 }
 
 // FeedsListResponse Feeds列表响应
@@ -330,7 +333,17 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 		logrus.Infof("设置定时发布时间: %s", t.Format("2006-01-02 15:04"))
 	}
 
+	previewPath := ""
+	if req.PreviewOnly {
+		f, err := os.CreateTemp("", "xhs-video-preview-*.png")
+		if err != nil {
+			return nil, err
+		}
+		previewPath = f.Name()
+		f.Close()
+	}
 	content := xiaohongshu.PublishVideoContent{
+		CoverPath: req.CoverPath, PreviewPath: previewPath,
 		Title:         req.Title,
 		Content:       req.Content,
 		Tags:          req.Tags,
@@ -347,10 +360,14 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 	}
 
 	resp := &PublishVideoResponse{
-		Title:   req.Title,
-		Content: req.Content,
-		Video:   req.Video,
-		Status:  "发布完成",
+		PreviewPath: previewPath,
+		Title:       req.Title,
+		Content:     req.Content,
+		Video:       req.Video,
+		Status:      "发布完成",
+	}
+	if req.PreviewOnly {
+		resp.Status = "预览完成，未发布；未保证保存平台草稿"
 	}
 	return resp, nil
 }
@@ -368,7 +385,15 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 		return err
 	}
 
-	return action.PublishVideo(ctx, content)
+	err = action.PublishVideo(ctx, content)
+	if err != nil && content.PreviewPath != "" {
+		if png, captureErr := page.Screenshot(true, nil); captureErr == nil {
+			if writeErr := os.WriteFile(content.PreviewPath, png, 0600); writeErr == nil {
+				return fmt.Errorf("%w；失败截图: %s", err, content.PreviewPath)
+			}
+		}
+	}
+	return err
 }
 
 // ListFeeds 获取Feeds列表

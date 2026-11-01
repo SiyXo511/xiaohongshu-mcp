@@ -231,7 +231,10 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 
 	logrus.Infof("MCP: 发布视频 - 标题: %s, 标签数量: %d, 定时: %s, 原创: %v, AI合成: %v, visibility: %s, 商品: %v", title, len(tags), scheduleAt, isOriginal, isAIGenerated, visibility, products)
 
+	coverPath, _ := args["cover_path"].(string)
+	previewOnly, _ := args["preview_only"].(bool)
 	req := &PublishVideoRequest{
+		CoverPath: coverPath, PreviewOnly: previewOnly,
 		Title:         title,
 		Content:       content,
 		Video:         videoPath,
@@ -254,7 +257,7 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 		}
 	}
 
-	resultText := fmt.Sprintf("视频发布成功: %+v", result)
+	resultText := fmt.Sprintf("%s: %+v", result.Status, result)
 	return &MCPToolResult{
 		Content: []MCPContent{{
 			Type: "text",
