@@ -189,10 +189,8 @@ func (s *XiaohongshuService) activateContentOperation(operation *xhsContentOpera
 		previous.Active = false
 		if previous.Page != nil {
 			_ = previous.Page.Close()
-			if s.contentPage == previous.Page {
-				s.contentPage = nil
-			}
 		}
+		s.closeContentBrowser()
 	}
 	operation.Active = true
 	s.activeContentOperation = operation
@@ -215,12 +213,23 @@ func (s *XiaohongshuService) closeContentOperation() {
 		operation.Active = false
 		if operation.Page != nil {
 			_ = operation.Page.Close()
-			if s.contentPage == operation.Page {
-				s.contentPage = nil
-			}
 		}
+		s.closeContentBrowser()
 	}
 	s.activeContentOperation = nil
+}
+
+func (s *XiaohongshuService) closeContentBrowser() {
+	browser := s.contentBrowser
+	s.contentBrowser = nil
+	s.contentPage = nil
+	if browser == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	browser.Close()
 }
 
 func xhsContentFingerprint(target XHSContentTarget) string {
@@ -314,11 +323,12 @@ func noteTarget(note xiaohongshu.ManagedNote, accountID, accountName, content st
 }
 
 func (s *XiaohongshuService) ensureContentPage() (*rod.Page, error) {
-	if s.contentBrowser == nil {
-		s.contentBrowser = newBrowser()
-	}
 	if s.contentPage == nil {
-		s.contentPage = s.contentBrowser.NewPage()
+		page, err := s.newContentBrowserPage()
+		if err != nil {
+			return nil, err
+		}
+		s.contentPage = page
 	}
 	if s.contentPage == nil {
 		return nil, fmt.Errorf("无法创建小红书作品管理页面")
@@ -327,12 +337,35 @@ func (s *XiaohongshuService) ensureContentPage() (*rod.Page, error) {
 }
 
 func (s *XiaohongshuService) newContentAuxPage() (*rod.Page, error) {
+	return s.newContentBrowserPage()
+}
+
+func (s *XiaohongshuService) newContentBrowserPage() (*rod.Page, error) {
+	page, err := s.tryNewContentBrowserPage()
+	if err == nil {
+		return page, nil
+	}
+	s.closeContentBrowser()
+	page, retryErr := s.tryNewContentBrowserPage()
+	if retryErr == nil {
+		return page, nil
+	}
+	return nil, fmt.Errorf("创建小红书作品管理页面失败: %w; 重建后仍失败: %v", err, retryErr)
+}
+
+func (s *XiaohongshuService) tryNewContentBrowserPage() (page *rod.Page, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			page = nil
+			err = fmt.Errorf("浏览器创建页面失败: %v", recovered)
+		}
+	}()
 	if s.contentBrowser == nil {
 		s.contentBrowser = newBrowser()
 	}
-	page := s.contentBrowser.NewPage()
+	page = s.contentBrowser.NewPage()
 	if page == nil {
-		return nil, fmt.Errorf("无法创建小红书作品管理辅助页面")
+		return nil, fmt.Errorf("浏览器返回空页面")
 	}
 	return page, nil
 }
