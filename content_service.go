@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -151,6 +153,15 @@ func validateXHSEditRequest(request XHSEditRequest) (XHSEditRequest, error) {
 	return request, nil
 }
 
+func validateXHSDeleteRequest(request XHSDeleteRequest) (XHSDeleteRequest, error) {
+	request.NoteID = strings.TrimSpace(request.NoteID)
+	request.ExpectedAccountID = strings.TrimSpace(request.ExpectedAccountID)
+	if request.NoteID == "" || request.ExpectedAccountID == "" {
+		return request, fmt.Errorf("必须提供稳定的笔记 ID 和 expected_account_id")
+	}
+	return request, nil
+}
+
 func (o *xhsContentOperation) validate(
 	now time.Time,
 	accountID, targetFingerprint, sessionFingerprint string,
@@ -171,6 +182,45 @@ func (o *xhsContentOperation) validate(
 		return fmt.Errorf("登录会话与准备时不一致，拒绝执行")
 	}
 	return nil
+}
+
+func (s *XiaohongshuService) activateContentOperation(operation *xhsContentOperation) {
+	if previous := s.activeContentOperation; previous != nil {
+		previous.Active = false
+		if previous.Page != nil {
+			_ = previous.Page.Close()
+			if s.contentPage == previous.Page {
+				s.contentPage = nil
+			}
+		}
+	}
+	operation.Active = true
+	s.activeContentOperation = operation
+}
+
+func (s *XiaohongshuService) requireActiveContentOperation(
+	operationID string,
+	kind contentOperationKind,
+) (*xhsContentOperation, error) {
+	operation := s.activeContentOperation
+	if operation == nil || !operation.Active ||
+		operation.OperationID != operationID || operation.Kind != kind {
+		return nil, fmt.Errorf("操作不存在、服务已重启或已被新的操作替换")
+	}
+	return operation, nil
+}
+
+func (s *XiaohongshuService) closeContentOperation() {
+	if operation := s.activeContentOperation; operation != nil {
+		operation.Active = false
+		if operation.Page != nil {
+			_ = operation.Page.Close()
+			if s.contentPage == operation.Page {
+				s.contentPage = nil
+			}
+		}
+	}
+	s.activeContentOperation = nil
 }
 
 func xhsContentFingerprint(target XHSContentTarget) string {
@@ -260,5 +310,467 @@ func noteTarget(note xiaohongshu.ManagedNote, accountID, accountName, content st
 		CoverURL:    note.CoverURL,
 		AccountID:   accountID,
 		AccountName: accountName,
+	}
+}
+
+func (s *XiaohongshuService) ensureContentPage() (*rod.Page, error) {
+	if s.contentBrowser == nil {
+		s.contentBrowser = newBrowser()
+	}
+	if s.contentPage == nil {
+		s.contentPage = s.contentBrowser.NewPage()
+	}
+	if s.contentPage == nil {
+		return nil, fmt.Errorf("无法创建小红书作品管理页面")
+	}
+	return s.contentPage, nil
+}
+
+func (s *XiaohongshuService) newContentAuxPage() (*rod.Page, error) {
+	if s.contentBrowser == nil {
+		s.contentBrowser = newBrowser()
+	}
+	page := s.contentBrowser.NewPage()
+	if page == nil {
+		return nil, fmt.Errorf("无法创建小红书作品管理辅助页面")
+	}
+	return page, nil
+}
+
+func (s *XiaohongshuService) currentContentAccount(ctx context.Context) (*xiaohongshu.CurrentUser, error) {
+	page, err := s.newContentAuxPage()
+	if err != nil {
+		return nil, err
+	}
+	defer page.Close()
+	return xiaohongshu.CurrentAccount(ctx, page)
+}
+
+func (s *XiaohongshuService) locateContentTarget(
+	ctx context.Context,
+	noteID string,
+	account *xiaohongshu.CurrentUser,
+) (XHSContentTarget, error) {
+	page, err := s.newContentAuxPage()
+	if err != nil {
+		return XHSContentTarget{}, err
+	}
+	defer page.Close()
+
+	action := xiaohongshu.NewContentAction(page)
+	notes, err := action.ListManagedNotes(ctx)
+	if err != nil {
+		return XHSContentTarget{}, err
+	}
+	note, err := xiaohongshu.UniqueManagedNote(notes, noteID)
+	if err != nil {
+		return XHSContentTarget{}, err
+	}
+	editor, err := action.OpenEditor(ctx, noteID)
+	if err != nil {
+		return XHSContentTarget{}, err
+	}
+	title, content, err := editor.Current()
+	if err != nil {
+		return XHSContentTarget{}, err
+	}
+	if strings.TrimSpace(note.Title) != "" && title != note.Title {
+		return XHSContentTarget{}, fmt.Errorf("管理列表与编辑页标题不一致，拒绝按可能变化的作品继续")
+	}
+	note.Title = title
+	return noteTarget(note, account.UserID, account.Nickname, content), nil
+}
+
+func (s *XiaohongshuService) saveContentScreenshot(name string, png []byte) (string, error) {
+	dir := filepath.Join(s.contentDataDir, "screenshots")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("创建小红书作品管理截图目录失败: %w", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, png, 0o600); err != nil {
+		return "", fmt.Errorf("保存小红书作品管理截图失败: %w", err)
+	}
+	return path, nil
+}
+
+func randomContentOperationID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("生成作品管理操作 ID 失败: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func (s *XiaohongshuService) recordUnknownContentOperation(
+	submitting xhsContentReceipt,
+	cause error,
+) (*XHSConfirmContentResult, error) {
+	unknown := submitting
+	unknown.Stage = contentReceiptUnknown
+	unknown.Message = "小红书作品操作结果未知；请先检查创作者中心，不要自动重试: " + cause.Error()
+	if err := s.writeContentReceipt(unknown); err != nil {
+		return nil, fmt.Errorf("小红书作品操作结果未知，且保存回执失败: %v; %w", cause, err)
+	}
+	return nil, fmt.Errorf("%s", unknown.Message)
+}
+
+func (s *XiaohongshuService) PrepareContentEdit(
+	ctx context.Context,
+	request XHSEditRequest,
+) (*XHSPrepareEditResult, error) {
+	request, err := validateXHSEditRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	s.contentMu.Lock()
+	defer s.contentMu.Unlock()
+
+	s.closeContentOperation()
+	account, err := s.currentContentAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if account.UserID != request.ExpectedAccountID {
+		return nil, fmt.Errorf("当前登录账号 %s 与 expected_account_id 不一致，未准备编辑", account.UserID)
+	}
+	target, err := s.locateContentTarget(ctx, request.NoteID, account)
+	if err != nil {
+		return nil, err
+	}
+
+	page, err := s.ensureContentPage()
+	if err != nil {
+		return nil, err
+	}
+	editor, err := xiaohongshu.NewContentAction(page).OpenEditor(ctx, request.NoteID)
+	if err != nil {
+		return nil, err
+	}
+	currentTitle, currentContent, err := editor.Current()
+	if err != nil {
+		return nil, err
+	}
+	if currentTitle != target.Title || currentContent != target.Content {
+		return nil, fmt.Errorf("编辑页内容与刚读取的作品不一致，未准备修改")
+	}
+	if err := editor.Replace(ctx, request.Title, request.Content); err != nil {
+		return nil, err
+	}
+	if err := editor.Verify(request.Title, request.Content, target.Title, target.Content); err != nil {
+		return nil, err
+	}
+	png, err := page.Screenshot(true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("截取小红书编辑预览失败: %w", err)
+	}
+	id, err := randomContentOperationID()
+	if err != nil {
+		return nil, err
+	}
+	screenshotPath, err := s.saveContentScreenshot("content-edit-preview-"+id+".png", png)
+	if err != nil {
+		return nil, err
+	}
+	session, err := xiaohongshu.SessionFingerprint(page)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt := time.Now().Add(contentOperationTTL)
+	s.activateContentOperation(&xhsContentOperation{
+		OperationID:        id,
+		Kind:               contentOperationEdit,
+		NoteID:             request.NoteID,
+		ExpectedAccountID:  request.ExpectedAccountID,
+		AccountID:          account.UserID,
+		TargetFingerprint:  xhsContentFingerprint(target),
+		SessionFingerprint: session,
+		Current:            target,
+		Title:              request.Title,
+		Content:            request.Content,
+		Page:               page,
+		ExpiresAt:          expiresAt,
+	})
+
+	return &XHSPrepareEditResult{
+		OperationID: id,
+		Stage:       "ready",
+		Target:      target,
+		Title:       request.Title,
+		Content:     request.Content,
+		Support: XHSContentSupport{
+			Title: true, Content: true, Video: false, Cover: false, Visibility: false,
+			Note: "第一版只提交标题和正文；编辑页虽有文件控件，但未实现视频替换，不做删旧重发",
+		},
+		ExpiresAt:      expiresAt,
+		ScreenshotPath: screenshotPath,
+		Message:        "小红书编辑页已填写但尚未提交；请核对截图后调用 confirm_content_edit",
+	}, nil
+}
+
+func (s *XiaohongshuService) ConfirmContentEdit(
+	ctx context.Context,
+	operationID string,
+) (*XHSConfirmContentResult, error) {
+	s.contentMu.Lock()
+	defer s.contentMu.Unlock()
+
+	if receipt, found, err := s.readContentReceipt(operationID); err != nil {
+		return nil, err
+	} else if found {
+		return xhsContentReceiptResult(receipt)
+	}
+	operation, err := s.requireActiveContentOperation(operationID, contentOperationEdit)
+	if err != nil {
+		return nil, err
+	}
+	if operation.Attempted {
+		return nil, fmt.Errorf("该操作已经尝试提交，程序不会再次点击")
+	}
+	account, err := s.currentContentAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.locateContentTarget(ctx, operation.NoteID, account)
+	if err != nil {
+		return nil, err
+	}
+	session, err := xiaohongshu.SessionFingerprint(operation.Page)
+	if err != nil {
+		return nil, err
+	}
+	if err := operation.validate(time.Now(), account.UserID, xhsContentFingerprint(target), session); err != nil {
+		return nil, err
+	}
+	editor, err := xiaohongshu.NewContentAction(operation.Page).CurrentEditor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := editor.Verify(operation.Title, operation.Content, operation.Current.Title, operation.Current.Content); err != nil {
+		return nil, err
+	}
+
+	operation.Attempted = true
+	submitting := xhsContentReceipt{
+		OperationID: operation.OperationID,
+		Kind:        contentOperationEdit,
+		NoteID:      operation.NoteID,
+		AccountID:   operation.AccountID,
+		Stage:       contentReceiptSubmitting,
+		Message:     "已开始提交小红书编辑，尚未确认结果",
+	}
+	if err := s.writeContentReceipt(submitting); err != nil {
+		operation.Attempted = false
+		return nil, err
+	}
+	if err := editor.Submit(ctx); err != nil {
+		return s.recordUnknownContentOperation(submitting, err)
+	}
+	if err := waitXHSEditMutation(ctx, operation.Page); err != nil {
+		return s.recordUnknownContentOperation(submitting, err)
+	}
+	now := time.Now()
+	receipt := xhsContentReceipt{
+		OperationID: operation.OperationID,
+		Kind:        contentOperationEdit,
+		NoteID:      operation.NoteID,
+		AccountID:   operation.AccountID,
+		Stage:       contentReceiptSubmitted,
+		Submitted:   now,
+		Message:     "小红书已接受编辑提交；是否审核通过或最终生效需回查笔记管理页",
+	}
+	if err := s.writeContentReceipt(receipt); err != nil {
+		return nil, fmt.Errorf("编辑已提交，但保存回执失败: %w", err)
+	}
+	return xhsContentReceiptResult(receipt)
+}
+
+func (s *XiaohongshuService) PrepareContentDelete(
+	ctx context.Context,
+	request XHSDeleteRequest,
+) (*XHSPrepareDeleteResult, error) {
+	request, err := validateXHSDeleteRequest(request)
+	if err != nil {
+		return nil, err
+	}
+
+	s.contentMu.Lock()
+	defer s.contentMu.Unlock()
+
+	s.closeContentOperation()
+	account, err := s.currentContentAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if account.UserID != request.ExpectedAccountID {
+		return nil, fmt.Errorf("当前登录账号 %s 与 expected_account_id 不一致，未准备删除", account.UserID)
+	}
+	target, err := s.locateContentTarget(ctx, request.NoteID, account)
+	if err != nil {
+		return nil, err
+	}
+	page, err := s.ensureContentPage()
+	if err != nil {
+		return nil, err
+	}
+	action := xiaohongshu.NewContentAction(page)
+	modalText, err := action.OpenDeletion(ctx, request.NoteID)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.Contains(modalText, "删除后将无法恢复") {
+		return nil, fmt.Errorf("小红书删除确认框未明确提示不可恢复，停止准备删除")
+	}
+	png, err := page.Screenshot(true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("截取小红书删除预览失败: %w", err)
+	}
+	id, err := randomContentOperationID()
+	if err != nil {
+		return nil, err
+	}
+	screenshotPath, err := s.saveContentScreenshot("content-delete-preview-"+id+".png", png)
+	if err != nil {
+		return nil, err
+	}
+	session, err := xiaohongshu.SessionFingerprint(page)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt := time.Now().Add(contentOperationTTL)
+	s.activateContentOperation(&xhsContentOperation{
+		OperationID:        id,
+		Kind:               contentOperationDelete,
+		NoteID:             request.NoteID,
+		ExpectedAccountID:  request.ExpectedAccountID,
+		AccountID:          account.UserID,
+		TargetFingerprint:  xhsContentFingerprint(target),
+		SessionFingerprint: session,
+		Current:            target,
+		Page:               page,
+		ExpiresAt:          expiresAt,
+	})
+
+	return &XHSPrepareDeleteResult{
+		OperationID:    id,
+		Stage:          "ready",
+		Target:         target,
+		PlatformNotice: modalText,
+		Support: XHSContentSupport{
+			Video: false, Cover: false, Visibility: false,
+			Note: "只删除当前笔记；小红书确认框明确提示删除后将无法恢复",
+		},
+		ExpiresAt:      expiresAt,
+		ScreenshotPath: screenshotPath,
+		Message:        "小红书删除确认框已打开但尚未点击确定；核对目标后调用 confirm_content_delete",
+	}, nil
+}
+
+func (s *XiaohongshuService) ConfirmContentDelete(
+	ctx context.Context,
+	operationID string,
+) (*XHSConfirmContentResult, error) {
+	s.contentMu.Lock()
+	defer s.contentMu.Unlock()
+
+	if receipt, found, err := s.readContentReceipt(operationID); err != nil {
+		return nil, err
+	} else if found {
+		return xhsContentReceiptResult(receipt)
+	}
+	operation, err := s.requireActiveContentOperation(operationID, contentOperationDelete)
+	if err != nil {
+		return nil, err
+	}
+	if operation.Attempted {
+		return nil, fmt.Errorf("该操作已经尝试删除，程序不会再次点击")
+	}
+	account, err := s.currentContentAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.locateContentTarget(ctx, operation.NoteID, account)
+	if err != nil {
+		return nil, err
+	}
+	session, err := xiaohongshu.SessionFingerprint(operation.Page)
+	if err != nil {
+		return nil, err
+	}
+	if err := operation.validate(time.Now(), account.UserID, xhsContentFingerprint(target), session); err != nil {
+		return nil, err
+	}
+	action := xiaohongshu.NewContentAction(operation.Page)
+	modalText, err := action.ContentDialogText("删除")
+	if err != nil {
+		return nil, err
+	}
+	if !strings.Contains(modalText, operation.Current.Title) {
+		return nil, fmt.Errorf("删除确认框中的作品与预览目标不一致，拒绝删除")
+	}
+
+	operation.Attempted = true
+	submitting := xhsContentReceipt{
+		OperationID: operation.OperationID,
+		Kind:        contentOperationDelete,
+		NoteID:      operation.NoteID,
+		AccountID:   operation.AccountID,
+		Stage:       contentReceiptSubmitting,
+		Message:     "已开始删除小红书笔记，尚未确认结果",
+	}
+	if err := s.writeContentReceipt(submitting); err != nil {
+		operation.Attempted = false
+		return nil, err
+	}
+	if err := action.ConfirmDeletion(ctx); err != nil {
+		return s.recordUnknownContentOperation(submitting, err)
+	}
+	missing, err := action.NoteMissing(ctx, operation.NoteID)
+	if err != nil || !missing {
+		if err == nil {
+			err = fmt.Errorf("删除后笔记仍在管理列表中")
+		}
+		return s.recordUnknownContentOperation(submitting, err)
+	}
+	now := time.Now()
+	receipt := xhsContentReceipt{
+		OperationID: operation.OperationID,
+		Kind:        contentOperationDelete,
+		NoteID:      operation.NoteID,
+		AccountID:   operation.AccountID,
+		Stage:       contentReceiptSubmitted,
+		Submitted:   now,
+		Message:     "小红书笔记已从管理列表移除",
+	}
+	if err := s.writeContentReceipt(receipt); err != nil {
+		return nil, fmt.Errorf("删除已确认，但保存回执失败: %w", err)
+	}
+	return xhsContentReceiptResult(receipt)
+}
+
+func waitXHSEditMutation(ctx context.Context, page *rod.Page) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		body, err := page.Element("body")
+		if err == nil {
+			text, textErr := body.Text()
+			if textErr == nil {
+				for _, marker := range []string{"发布成功", "修改成功", "更新成功", "保存成功"} {
+					if strings.Contains(strings.ReplaceAll(text, " ", ""), marker) {
+						return nil
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("已点击提交，但页面未返回可验证的小红书编辑结果；请检查创作者中心，禁止自动重试")
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }

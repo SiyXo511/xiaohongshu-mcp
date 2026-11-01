@@ -1,6 +1,10 @@
 package xiaohongshu
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/go-rod/rod/lib/proto"
+)
 
 func TestManagedNotesPreserveStableNoteIDs(t *testing.T) {
 	raw := []managedNoteRaw{
@@ -49,5 +53,39 @@ func TestUniqueManagedNoteRejectsMissingAndDuplicateTargets(t *testing.T) {
 	}
 	if _, err := uniqueManagedNote(notes, "wanted"); err == nil {
 		t.Fatal("duplicate target accepted")
+	}
+}
+
+func TestSessionFingerprintIgnoresCookieOrderAndDetectsChanges(t *testing.T) {
+	first := []*proto.NetworkCookie{
+		{Name: "galaxy_creator_session_id", Value: "session-a", Domain: ".xiaohongshu.com", Path: "/"},
+		{Name: "a1", Value: "web_session", Domain: ".xiaohongshu.com", Path: "/"},
+	}
+	reversed := []*proto.NetworkCookie{first[1], first[0]}
+	if sessionFingerprintFromCookies(first) != sessionFingerprintFromCookies(reversed) {
+		t.Fatal("cookie order changed fingerprint")
+	}
+
+	changed := []*proto.NetworkCookie{
+		{Name: "galaxy_creator_session_id", Value: "session-b", Domain: ".xiaohongshu.com", Path: "/"},
+		first[1],
+	}
+	if sessionFingerprintFromCookies(first) == sessionFingerprintFromCookies(changed) {
+		t.Fatal("session change did not alter fingerprint")
+	}
+}
+
+func TestXHSNoteMissingRequiresLoadedEvidence(t *testing.T) {
+	if xhsNoteMissingConfirmed(false, 0, "") {
+		t.Fatal("empty page reload was accepted as a confirmed deletion")
+	}
+	if xhsNoteMissingConfirmed(true, 3, "删除成功") {
+		t.Fatal("visible target was accepted as deleted")
+	}
+	if !xhsNoteMissingConfirmed(false, 3, "") {
+		t.Fatal("missing target in a loaded list was rejected")
+	}
+	if !xhsNoteMissingConfirmed(false, 0, "删除成功") {
+		t.Fatal("explicit deletion success was rejected")
 	}
 }

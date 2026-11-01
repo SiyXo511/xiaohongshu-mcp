@@ -106,6 +106,76 @@ func TestXHSContentReceiptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestXHSContentReceiptUnknownRequiresManualCheck(t *testing.T) {
+	_, err := xhsContentReceiptResult(xhsContentReceipt{
+		OperationID: "op-1",
+		Kind:        contentOperationDelete,
+		NoteID:      "6ae74c03000000000e00e176",
+		Stage:       contentReceiptUnknown,
+		Message:     "结果未知",
+	})
+	if err == nil || !strings.Contains(err.Error(), "不要自动重试") {
+		t.Fatalf("unexpected unknown-result handling: %v", err)
+	}
+}
+
+func TestActivateXHSContentOperationInvalidatesPrevious(t *testing.T) {
+	service := &XiaohongshuService{}
+	first := &xhsContentOperation{OperationID: "first"}
+	second := &xhsContentOperation{OperationID: "second"}
+
+	service.activateContentOperation(first)
+	service.activateContentOperation(second)
+
+	if service.activeContentOperation != second {
+		t.Fatal("new operation was not activated")
+	}
+	if first.Active {
+		t.Fatal("previous operation remained active")
+	}
+}
+
+func TestXHSContentFingerprintDetectsMetadataChanges(t *testing.T) {
+	base := XHSContentTarget{
+		NoteID:      "6ae74c03000000000e00e176",
+		Title:       "把想念寄出去",
+		Content:     "旧版正文",
+		PublishedAt: "2026-11-01 22:26",
+		AccountID:   "68343f6e000000001b01ade6",
+	}
+	fingerprint := xhsContentFingerprint(base)
+	if fingerprint == "" {
+		t.Fatal("empty fingerprint")
+	}
+	changed := base
+	changed.Content = "已经变化的正文"
+	if fingerprint == xhsContentFingerprint(changed) {
+		t.Fatal("content change did not alter fingerprint")
+	}
+}
+
+func TestValidateXHSDeleteRequest(t *testing.T) {
+	got, err := validateXHSDeleteRequest(XHSDeleteRequest{
+		NoteID:            " 6ae74c03000000000e00e176 ",
+		ExpectedAccountID: " 68343f6e000000001b01ade6 ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NoteID != "6ae74c03000000000e00e176" ||
+		got.ExpectedAccountID != "68343f6e000000001b01ade6" {
+		t.Fatalf("unexpected normalized request: %+v", got)
+	}
+	for _, request := range []XHSDeleteRequest{
+		{ExpectedAccountID: "account"},
+		{NoteID: "note"},
+	} {
+		if _, err := validateXHSDeleteRequest(request); err == nil {
+			t.Fatalf("invalid request accepted: %+v", request)
+		}
+	}
+}
+
 func stringPointer(value string) *string {
 	return &value
 }

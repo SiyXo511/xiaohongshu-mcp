@@ -2,14 +2,18 @@ package xiaohongshu
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/input"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/humanize"
 )
@@ -76,6 +80,60 @@ func uniqueManagedNote(notes []ManagedNote, wantedID string) (ManagedNote, error
 	return matches[0], nil
 }
 
+func UniqueManagedNote(notes []ManagedNote, wantedID string) (ManagedNote, error) {
+	return uniqueManagedNote(notes, wantedID)
+}
+
+func CurrentAccount(ctx context.Context, page *rod.Page) (*CurrentUser, error) {
+	login := NewLogin(page)
+	loggedIn, err := login.CheckLoginStatus(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "检查小红书登录状态失败")
+	}
+	if !loggedIn {
+		return nil, errors.New("小红书登录失效，请重新扫码登录")
+	}
+	user, err := login.CurrentUser(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "读取小红书当前账号失败")
+	}
+	if user.UserID == "" {
+		return nil, errors.New("小红书当前账号缺少稳定用户 ID")
+	}
+	return user, nil
+}
+
+func SessionFingerprint(page *rod.Page) (string, error) {
+	cookies, err := page.Browser().GetCookies()
+	if err != nil {
+		return "", errors.Wrap(err, "读取小红书登录会话失败")
+	}
+	return sessionFingerprintFromCookies(cookies), nil
+}
+
+func sessionFingerprintFromCookies(cookies []*proto.NetworkCookie) string {
+	lines := make([]string, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil {
+			continue
+		}
+		switch cookie.Name {
+		case "galaxy_creator_session_id", "web_session", "a1":
+		default:
+			continue
+		}
+		lines = append(lines, strings.Join([]string{
+			cookie.Name,
+			cookie.Value,
+			cookie.Domain,
+			cookie.Path,
+		}, "\x00"))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\x01")))
+	return hex.EncodeToString(sum[:])
+}
+
 type ContentAction struct {
 	page *rod.Page
 }
@@ -137,7 +195,11 @@ func (a *ContentAction) OpenEditor(ctx context.Context, noteID string) (*Content
 		return nil, errors.Wrap(err, "打开小红书笔记编辑页失败")
 	}
 	_ = page.WaitLoad()
+	return a.CurrentEditor(ctx)
+}
 
+func (a *ContentAction) CurrentEditor(ctx context.Context) (*ContentEditor, error) {
+	page := a.page.Context(ctx).Timeout(2 * time.Minute)
 	title, err := waitContentElement(ctx, page, []string{
 		`input[placeholder*="填写标题"]`,
 		`div.d-input input`,
@@ -232,6 +294,17 @@ func (e *ContentEditor) FindButton(ctx context.Context, labels ...string) (*rod.
 	}
 }
 
+func (e *ContentEditor) Submit(ctx context.Context) error {
+	button, err := e.FindButton(ctx, "发布", "更新")
+	if err != nil {
+		return err
+	}
+	if err := humanize.Click(button); err != nil {
+		return errors.Wrap(err, "点击小红书提交修改失败")
+	}
+	return waitContentPoll(ctx)
+}
+
 func (a *ContentAction) OpenDeletion(ctx context.Context, noteID string) (string, error) {
 	page := a.page.Context(ctx).Timeout(2 * time.Minute)
 	if err := ensureCreatorSession(page); err != nil {
@@ -288,29 +361,38 @@ func (a *ContentAction) NoteMissing(ctx context.Context, noteID string) (bool, e
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		result, err := a.page.Eval(`(noteID) => {
+			let count = 0
 			for (const card of document.querySelectorAll(".note-card")) {
+				count++
 				let impression = null
 				try {
 					impression = JSON.parse(card.getAttribute("data-impression") || "")
 				} catch (_) {
 					continue
 				}
-				if (impression?.noteTarget?.value?.noteId === noteID) return false
+				if (impression?.noteTarget?.value?.noteId === noteID) {
+					return JSON.stringify({hasTarget:true, count})
+				}
 			}
-			return true
+			return JSON.stringify({
+				hasTarget:false,
+				count,
+				body:(document.body?.innerText || "").replace(/\s+/g, " ").trim()
+			})
 		}`, noteID)
 		if err != nil {
 			return false, err
 		}
-		if result.Value.Bool() {
-			return true, nil
+		var state struct {
+			HasTarget bool   `json:"hasTarget"`
+			Count     int    `json:"count"`
+			Body      string `json:"body"`
 		}
-		body, err := a.page.Element("body")
-		if err == nil {
-			text, _ := body.Text()
-			if strings.Contains(normalizeContentText(text), "删除成功") {
-				return true, nil
-			}
+		if err := json.Unmarshal([]byte(result.Value.String()), &state); err != nil {
+			return false, err
+		}
+		if xhsNoteMissingConfirmed(state.HasTarget, state.Count, state.Body) {
+			return true, nil
 		}
 		if time.Now().After(deadline) {
 			return false, fmt.Errorf("已点击删除，但页面未返回可验证结果")
@@ -319,6 +401,13 @@ func (a *ContentAction) NoteMissing(ctx context.Context, noteID string) (bool, e
 			return false, err
 		}
 	}
+}
+
+func xhsNoteMissingConfirmed(hasTarget bool, cardCount int, body string) bool {
+	if hasTarget {
+		return false
+	}
+	return strings.Contains(normalizeContentText(body), "删除成功") || cardCount > 0
 }
 
 func waitManagedNoteCards(ctx context.Context, page *rod.Page) error {
