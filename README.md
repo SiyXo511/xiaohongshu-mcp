@@ -784,7 +784,7 @@ npx @modelcontextprotocol/inspector
 
 - 使用 MCP Inspector 测试连接
 - 测试 Ping Server 功能验证连接
-- 检查 List Tools 是否返回 13 个工具
+- 检查 List Tools 是否返回 22 个工具
 
 </details>
 
@@ -899,6 +899,13 @@ npx mcporter list xiaohongshu-mcp
   - `schedule_at`: 定时发布时间（可选），ISO8601 格式，支持 1 小时至 14 天内
   - `visibility`: 可见范围（可选），支持 `公开可见`（默认）、`仅自己可见`、`仅互关好友可见`
   - `products`: 商品关键词列表（可选），用于绑定带货商品。填写商品名称或商品ID，系统会自动搜索并选择第一个匹配结果。需账号已开通商品功能。示例: [面膜, 防晒霜SPF50]
+- `prepare_content_edit` - 按稳定笔记 ID 打开编辑页，只填写标题和正文并返回预览（必需：note_id, expected_account_id；可选：title, content）
+  - `title`: 新标题，最多 20 个字符；不传则保持原标题
+  - `content`: 新正文，最多 1000 个字符；不传则保持原正文
+  - 不提交修改；第一版不开放视频替换、封面和可见范围编辑
+- `confirm_content_edit` - 提交已预览的标题正文修改（必需：operation_id）
+- `prepare_content_delete` - 按稳定笔记 ID 打开删除确认框并返回目标、平台提示和截图（必需：note_id, expected_account_id）
+- `confirm_content_delete` - 确认删除已预览的笔记（必需：operation_id）。删除不可恢复
 - `list_feeds` - 获取小红书首页推荐列表（无参数）
 - `search_feeds` - 搜索小红书内容（必需：keyword）
   - `filters`: 筛选选项（可选）
@@ -920,6 +927,10 @@ npx mcporter list xiaohongshu-mcp
 - `favorite_feed` - 收藏/取消收藏（必需：feed_id, xsec_token）
   - `unfavorite`: 是否取消收藏（可选），true 为取消收藏，默认为收藏
 - `user_profile` - 获取用户个人主页信息（必需：user_id, xsec_token）
+
+`get_my_profile` 返回当前账号和笔记稳定 ID。编辑、删除必须使用 `note_id` 与 `expected_account_id`，不能按相同标题或列表位置猜测目标。两类 prepare 都会返回 30 分钟内有效的 `operation_id`；`confirm_*` 会再次核对账号、当前笔记内容和登录会话，并在点击前写入原子回执。同一时间只允许一个作品管理操作；新的 prepare、服务重启、换账号、目标变化或重复确认都会拒绝旧操作。结果未知时不会自动重试，应先检查创作者中心。
+
+编辑页虽然存在视频文件控件，但当前没有实现替换视频，也不提供“删旧重发”。删除确认框明确提示“删除后将无法恢复”，必须核对 prepare 截图后再提交。
 
 ### 2.4. 使用示例
 

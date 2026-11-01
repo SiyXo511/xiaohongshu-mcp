@@ -786,7 +786,7 @@ Usage steps:
 
 - Use MCP Inspector to test connection
 - Test Ping Server functionality to verify connection
-- Check if List Tools returns 13 tools
+- Check if List Tools returns 22 tools
 
 </details>
 
@@ -901,6 +901,13 @@ After successful connection, you can use the following MCP tools:
   - `schedule_at`: Scheduled publish time (optional), ISO8601 format, supports 1 hour to 14 days ahead
   - `visibility`: Visibility scope (optional), supports `公开可见` / public (default), `仅自己可见` / self-only, `仅互关好友可见` / mutual-followers-only
   - `products`: Product keyword list (optional), used to attach products for social commerce. Provide a product name or product ID; the system searches automatically and picks the first match. Requires the product feature to be enabled on your account. Example: [面膜, 防晒霜SPF50]
+- `prepare_content_edit` - Open an existing note by stable ID, fill only its title and body, and return a preview (required: note_id, expected_account_id; optional: title, content)
+  - `title`: New title, up to 20 characters; omit to keep the current title
+  - `content`: New body, up to 1,000 characters; omit to keep the current body
+  - Does not submit. Video replacement, cover editing, and visibility editing are not exposed in the first version
+- `confirm_content_edit` - Submit the previewed title and body edit (required: operation_id)
+- `prepare_content_delete` - Open the delete dialog by stable note ID and return the target, platform notice, and screenshot (required: note_id, expected_account_id)
+- `confirm_content_delete` - Delete the previewed note (required: operation_id). Deletion is irreversible
 - `list_feeds` - Get RedNote homepage recommendation list (no parameters)
 - `search_feeds` - Search RedNote content (required: keyword)
   - `filters`: Filter options (optional). Values must be passed exactly as the Chinese strings below — they match the labels on the RedNote filter panel.
@@ -922,6 +929,10 @@ After successful connection, you can use the following MCP tools:
 - `favorite_feed` - Favorite / unfavorite a note (required: feed_id, xsec_token)
   - `unfavorite`: Whether to unfavorite (optional), true to unfavorite, default is favorite
 - `user_profile` - Get user profile information (required: user_id, xsec_token)
+
+`get_my_profile` returns the current account and stable note IDs. Editing and deletion must target `note_id` together with `expected_account_id`; identical titles and list positions are never treated as identities. Both prepare tools return an `operation_id` valid for 30 minutes. `confirm_*` rechecks the account, current note content, and login session, writes an atomic receipt before clicking, and allows only one active content operation. A newer prepare, service restart, account change, target change, or repeated confirmation invalidates the old operation. Unknown results are never retried automatically; check the creator center first.
+
+The edit page technically exposes a video file input, but video replacement is not implemented and the service never performs delete-and-republish. RedNote's delete dialog says deletion cannot be undone, so review the prepare screenshot before confirming.
 
 ### 2.4. Usage Examples
 
