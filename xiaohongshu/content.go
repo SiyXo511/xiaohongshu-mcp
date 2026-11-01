@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -466,20 +465,42 @@ func replaceContentText(
 	if err := humanize.Click(element); err != nil {
 		return err
 	}
-	actions, err := element.KeyActions()
-	if err != nil {
+	if _, err := element.Eval(`(contentEditable) => {
+		this.focus()
+		if (!contentEditable && typeof this.select === "function") {
+			this.select()
+			return
+		}
+		const selection = window.getSelection()
+		const range = document.createRange()
+		range.selectNodeContents(this)
+		selection.removeAllRanges()
+		selection.addRange(range)
+	}`, contentEditable); err != nil {
 		return err
 	}
-	modifier := input.MetaLeft
-	if runtime.GOOS != "darwin" {
-		modifier = input.ControlLeft
+	page := element.Page().Context(ctx)
+	if err := page.Keyboard.Press(input.Backspace); err != nil {
+		return err
 	}
-	if err := actions.Press(modifier).Type(input.KeyA).Do(); err != nil {
+	if err := waitContentPoll(ctx); err != nil {
 		return err
 	}
 	if contentEditable {
-		if err := element.Page().Keyboard.Press(input.Delete); err != nil {
+		current, err := element.Text()
+		if err != nil {
 			return err
+		}
+		if normalizeContentText(current) != "" {
+			return fmt.Errorf("正文输入框未清空，实际为 %q", normalizeContentText(current))
+		}
+	} else {
+		current, err := element.Property("value")
+		if err != nil {
+			return err
+		}
+		if normalizeContentText(current.Str()) != "" {
+			return fmt.Errorf("标题输入框未清空，实际为 %q", normalizeContentText(current.Str()))
 		}
 	}
 	return humanize.Type(ctx, element, value)
