@@ -91,6 +91,56 @@ func TestNotificationToolsRegistered(t *testing.T) {
 	}
 }
 
+func TestContentManagementToolsRegistered(t *testing.T) {
+	router := setupRoutes(NewAppServer(NewXiaohongshuService(), ""))
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	tools := make(map[string]map[string]json.RawMessage, len(result.Result.Tools))
+	for _, tool := range result.Result.Tools {
+		tools[tool.Name] = tool.InputSchema.Properties
+	}
+
+	for tool, properties := range map[string][]string{
+		"prepare_content_edit": {
+			"note_id", "expected_account_id", "title", "content",
+		},
+		"prepare_content_delete": {
+			"note_id", "expected_account_id",
+		},
+		"confirm_content_edit":   {"operation_id"},
+		"confirm_content_delete": {"operation_id"},
+	} {
+		schema, ok := tools[tool]
+		if !assert.True(t, ok, "工具 %s 应已注册", tool) {
+			continue
+		}
+		for _, property := range properties {
+			assert.Contains(t, schema, property, "%s schema 缺参数 %s", tool, property)
+		}
+	}
+}
+
 // TestNotificationRoutesRegistered 固定通知的 HTTP 路由存在。
 //
 // 读路由表而不是发请求：这些 handler 会真的起浏览器访问小红书，

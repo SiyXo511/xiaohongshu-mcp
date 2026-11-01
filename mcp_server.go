@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
@@ -79,6 +81,22 @@ type UserProfileArgs struct {
 // MyProfileArgs 我的主页参数
 type MyProfileArgs struct {
 	Tab string `json:"tab,omitempty" jsonschema:"主页 tab: note(笔记,默认)|fav(收藏)|liked(点赞)"`
+}
+
+type PrepareContentEditArgs struct {
+	NoteID            string  `json:"note_id" jsonschema:"小红书笔记稳定 ID，从 get_my_profile 返回的笔记 id 获取"`
+	ExpectedAccountID string  `json:"expected_account_id" jsonschema:"准备时看到的小红书账号 ID"`
+	Title             *string `json:"title,omitempty" jsonschema:"新标题，最多 20 个字符；不传则保持原标题"`
+	Content           *string `json:"content,omitempty" jsonschema:"新正文，最多 1000 个字符；不传则保持原正文"`
+}
+
+type PrepareContentDeleteArgs struct {
+	NoteID            string `json:"note_id" jsonschema:"小红书笔记稳定 ID，从 get_my_profile 返回的笔记 id 获取"`
+	ExpectedAccountID string `json:"expected_account_id" jsonschema:"准备时看到的小红书账号 ID"`
+}
+
+type ConfirmContentArgs struct {
+	OperationID string `json:"operation_id" jsonschema:"prepare_content_edit 或 prepare_content_delete 返回的 operation_id"`
 }
 
 // PostCommentArgs 发表评论的参数
@@ -494,6 +512,82 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "prepare_content_edit",
+			Description: "按稳定笔记 ID 打开小红书编辑页，只填写标题和正文并返回预览；不会提交。第一版不支持视频替换",
+			Annotations: &mcp.ToolAnnotations{},
+		},
+		withPanicRecovery("prepare_content_edit", func(ctx context.Context, req *mcp.CallToolRequest, args PrepareContentEditArgs) (*mcp.CallToolResult, any, error) {
+			callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			result, err := appServer.xiaohongshuService.PrepareContentEdit(callCtx, XHSEditRequest{
+				NoteID:            args.NoteID,
+				ExpectedAccountID: args.ExpectedAccountID,
+				Title:             args.Title,
+				Content:           args.Content,
+			})
+			if err != nil {
+				return convertToMCPResult(contentErrorResult(err)), nil, nil
+			}
+			return convertToMCPResult(contentJSONResult(result)), nil, nil
+		}),
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "confirm_content_edit",
+			Description: "确认提交已预览的小红书标题正文编辑；单次执行，结果未知时禁止自动重试",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+		},
+		withPanicRecovery("confirm_content_edit", func(ctx context.Context, req *mcp.CallToolRequest, args ConfirmContentArgs) (*mcp.CallToolResult, any, error) {
+			callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			defer cancel()
+			result, err := appServer.xiaohongshuService.ConfirmContentEdit(callCtx, args.OperationID)
+			if err != nil {
+				return convertToMCPResult(contentErrorResult(err)), nil, nil
+			}
+			return convertToMCPResult(contentJSONResult(result)), nil, nil
+		}),
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "prepare_content_delete",
+			Description: "按稳定笔记 ID 打开小红书删除确认框并返回目标与截图；不会点击最终删除",
+			Annotations: &mcp.ToolAnnotations{},
+		},
+		withPanicRecovery("prepare_content_delete", func(ctx context.Context, req *mcp.CallToolRequest, args PrepareContentDeleteArgs) (*mcp.CallToolResult, any, error) {
+			callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			result, err := appServer.xiaohongshuService.PrepareContentDelete(callCtx, XHSDeleteRequest{
+				NoteID:            args.NoteID,
+				ExpectedAccountID: args.ExpectedAccountID,
+			})
+			if err != nil {
+				return convertToMCPResult(contentErrorResult(err)), nil, nil
+			}
+			return convertToMCPResult(contentJSONResult(result)), nil, nil
+		}),
+	)
+
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "confirm_content_delete",
+			Description: "确认删除已预览的小红书笔记；不可恢复，单次执行，结果未知时禁止自动重试",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+		},
+		withPanicRecovery("confirm_content_delete", func(ctx context.Context, req *mcp.CallToolRequest, args ConfirmContentArgs) (*mcp.CallToolResult, any, error) {
+			callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			defer cancel()
+			result, err := appServer.xiaohongshuService.ConfirmContentDelete(callCtx, args.OperationID)
+			if err != nil {
+				return convertToMCPResult(contentErrorResult(err)), nil, nil
+			}
+			return convertToMCPResult(contentJSONResult(result)), nil, nil
+		}),
+	)
+
 	// 工具 15: 通知未读数
 	mcp.AddTool(server,
 		&mcp.Tool{
@@ -558,7 +652,23 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
-	logrus.Infof("Registered %d MCP tools", 18)
+	logrus.Infof("Registered %d MCP tools", 22)
+}
+
+func contentJSONResult(value any) *MCPToolResult {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return contentErrorResult(err)
+	}
+	return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: string(data)}}}
+}
+
+func contentErrorResult(err error) *MCPToolResult {
+	data, _ := json.MarshalIndent(map[string]any{
+		"success": false,
+		"message": err.Error(),
+	}, "", "  ")
+	return &MCPToolResult{IsError: true, Content: []MCPContent{{Type: "text", Text: string(data)}}}
 }
 
 // convertToMCPResult 将自定义的 MCPToolResult 转换为官方 SDK 的格式
