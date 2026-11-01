@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -20,12 +22,19 @@ import (
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
-	logins loginSessions
+	logins                 loginSessions
+	contentMu              sync.Mutex
+	contentBrowser         *headless_browser.Browser
+	contentPage            *rod.Page
+	contentDataDir         string
+	activeContentOperation *xhsContentOperation
 }
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
-	return &XiaohongshuService{}
+	return &XiaohongshuService{
+		contentDataDir: filepath.Dir(cookies.GetCookiesFilePath()),
+	}
 }
 
 // PublishRequest 发布请求
