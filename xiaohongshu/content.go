@@ -255,7 +255,11 @@ func (e *ContentEditor) Verify(title, content *string, originalTitle, originalCo
 	}
 	if gotTitle != normalizeContentText(wantTitle) ||
 		gotContent != normalizeContentText(wantContent) {
-		return fmt.Errorf("小红书编辑页回读值与预览请求不一致")
+		return fmt.Errorf(
+			"小红书编辑页回读值与预览请求不一致：标题 got=%q want=%q；正文 got=%q want=%q",
+			gotTitle, normalizeContentText(wantTitle),
+			gotContent, normalizeContentText(wantContent),
+		)
 	}
 	return nil
 }
