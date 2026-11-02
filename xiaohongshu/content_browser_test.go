@@ -45,3 +45,30 @@ func TestReplaceContentTextClearsExistingTitle(t *testing.T) {
 		t.Fatalf("标题未完整替换: got=%q", got)
 	}
 }
+
+func TestReplaceContentTextReplacesExistingBody(t *testing.T) {
+	bin, err := browser.EnsureBrowser()
+	if err != nil {
+		t.Skipf("SKIP: 浏览器不可用: %v", err)
+	}
+
+	url := launcher.New().Bin(bin).Headless(true).MustLaunch()
+	rodBrowser := rod.New().ControlURL(url).MustConnect()
+	defer rodBrowser.MustClose()
+
+	page := rodBrowser.MustPage("about:blank")
+	page.MustSetDocumentContent(`
+		<div id="body" contenteditable="true" style="width:400px;height:80px">旧正文</div>
+	`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := page.MustElement("#body")
+	if err := replaceContentText(ctx, body, "这是新正文。", true); err != nil {
+		t.Fatalf("替换正文失败: %v", err)
+	}
+	if got := normalizeContentText(body.MustText()); got != "这是新正文。" {
+		t.Fatalf("正文未完整替换: got=%q", got)
+	}
+}

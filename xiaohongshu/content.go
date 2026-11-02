@@ -465,23 +465,34 @@ func replaceContentText(
 	if err := humanize.Click(element); err != nil {
 		return err
 	}
-	if _, err := element.Eval(`(contentEditable) => {
-		this.focus()
-		if (!contentEditable && typeof this.select === "function") {
-			this.select()
-			return
-		}
-		const selection = window.getSelection()
-		const range = document.createRange()
-		range.selectNodeContents(this)
-		selection.removeAllRanges()
-		selection.addRange(range)
-	}`, contentEditable); err != nil {
-		return err
-	}
 	page := element.Page().Context(ctx)
-	if err := page.Keyboard.Press(input.Backspace); err != nil {
-		return err
+	if contentEditable {
+		if _, err := element.Eval(`() => {
+			this.focus()
+			const selection = window.getSelection()
+			const range = document.createRange()
+			range.selectNodeContents(this)
+			selection.removeAllRanges()
+			selection.addRange(range)
+			if (!document.execCommand("delete")) {
+				throw new Error("富文本编辑器拒绝删除选区")
+			}
+		}`); err != nil {
+			return err
+		}
+	} else {
+		if _, err := element.Eval(`() => {
+			this.focus()
+			if (typeof this.select !== "function") {
+				throw new Error("标题输入框不支持全选")
+			}
+			this.select()
+		}`); err != nil {
+			return err
+		}
+		if err := page.Keyboard.Press(input.Backspace); err != nil {
+			return err
+		}
 	}
 	if err := waitContentPoll(ctx); err != nil {
 		return err
