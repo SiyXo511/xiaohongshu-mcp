@@ -187,9 +187,7 @@ func (o *xhsContentOperation) validate(
 func (s *XiaohongshuService) activateContentOperation(operation *xhsContentOperation) {
 	if previous := s.activeContentOperation; previous != nil {
 		previous.Active = false
-		if previous.Page != nil {
-			_ = previous.Page.Close()
-		}
+		closeContentPage(previous.Page)
 		s.closeContentBrowser()
 	}
 	operation.Active = true
@@ -211,12 +209,22 @@ func (s *XiaohongshuService) requireActiveContentOperation(
 func (s *XiaohongshuService) closeContentOperation() {
 	if operation := s.activeContentOperation; operation != nil {
 		operation.Active = false
-		if operation.Page != nil {
-			_ = operation.Page.Close()
-		}
+		closeContentPage(operation.Page)
 		s.closeContentBrowser()
 	}
 	s.activeContentOperation = nil
+}
+
+func closeContentPage(page *rod.Page) {
+	if page == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			_ = recover()
+		}()
+		_ = page.Timeout(3 * time.Second).Close()
+	}()
 }
 
 func (s *XiaohongshuService) closeContentBrowser() {
@@ -226,10 +234,12 @@ func (s *XiaohongshuService) closeContentBrowser() {
 	if browser == nil {
 		return
 	}
-	defer func() {
-		_ = recover()
+	go func() {
+		defer func() {
+			_ = recover()
+		}()
+		browser.Close()
 	}()
-	browser.Close()
 }
 
 func xhsContentFingerprint(target XHSContentTarget) string {
